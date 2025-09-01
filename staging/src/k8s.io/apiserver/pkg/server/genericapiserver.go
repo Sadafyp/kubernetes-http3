@@ -27,7 +27,8 @@ import (
 	"time"
 
 	systemd "github.com/coreos/go-systemd/v22/daemon"
-
+	"github.com/quic-go/quic-go/http3"
+	
 	"golang.org/x/time/rate"
 	apidiscoveryv2 "k8s.io/api/apidiscovery/v2"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -757,7 +758,49 @@ func (s preparedGenericAPIServer) NonBlockingRunWithContext(ctx context.Context,
 			close(internalStopCh)
 			return nil, nil, err
 		}
+		//ADDED BY SADAF
+		// ─── HTTP/3 (QUIC) listener ───
+		{
+			stopCh := ctx.Done()
+			// Build the same TLS config HTTPS uses
+			tlsCfg, err := s.SecureServingInfo.tlsConfig(stopCh)
+			if err != nil {
+				klog.ErrorS(err, "http3: failed to build TLS config")
+			} else {
+				// Cloning
+				tls3 := tlsCfg.Clone()
+				http3.ConfigureTLSConfig(tls3) // set ALPN h3, enforcing TLS 1.3
+				
+				addr := ":6443" // fallback
+				if l := s.SecureServingInfo.Listener; l != nil {
+					addr = l.Addr().String()
+				}
+
+				quicSrv := &http3.Server{
+					Addr:      addr,
+					Handler:   s.Handler.Director, // same handler as HTTPS
+					TLSConfig: tls3,
+				}
+				klog.InfoS("http3: enabling QUIC", "addr", addr)
+				// Close QUIC when apiserver context is cancelled
+				go func() {
+					<-stopCh
+					klog.InfoS("http3: shutting down QUIC")
+					_ = quicSrv.Close()
+				}()
+				// Run the QUIC server
+				go func() {
+					if err := quicSrv.ListenAndServe(); err != nil {
+						//log: ListenAndServe returns non-nil error on Close()
+						klog.ErrorS(err, "http3: QUIC listener finished")
+					} else {
+						klog.InfoS("http3: QUIC listener exited successfully")
+					}
+				}()
+			}  
+		}
 	}
+//
 
 	// Now that listener have bound successfully, it is the
 	// responsibility of the caller to close the provided channel to

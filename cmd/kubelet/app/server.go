@@ -696,8 +696,22 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 			return errors.New("onHeartbeatFailure must be a valid function other than nil")
 		}
 		kubeDeps.OnHeartbeatFailure = onHeartbeatFailure
-
+		//ADDED BY SADAF
+		// Build an HTTP/3 client for the same TLS
+		// If anything fails, fall back
+		var httpClient *http.Client
+		if h3c, h3err := newHTTP3Client(clientConfig); h3err != nil {
+			klog.ErrorS(h3err, "http3: building HTTP/3 client failed, falling back to default HTTP transport")
+		} else {
+			httpClient = h3c
+		}
+		// ----- main kube client -----
+		if httpClient != nil {
+			kubeDeps.KubeClient, err = clientset.NewForConfigAndClient(clientConfig, httpClient)
+		} else {
+		//
 		kubeDeps.KubeClient, err = clientset.NewForConfig(clientConfig)
+	}
 		if err != nil {
 			return fmt.Errorf("failed to initialize kubelet client: %w", err)
 		}
@@ -706,7 +720,11 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 		eventClientConfig := *clientConfig
 		eventClientConfig.QPS = float32(s.EventRecordQPS)
 		eventClientConfig.Burst = int(s.EventBurst)
+		if httpClient != nil {
+			kubeDeps.EventClient, err = v1core.NewForConfigAndClient(&eventClientConfig, httpClient)
+		} else {
 		kubeDeps.EventClient, err = v1core.NewForConfig(&eventClientConfig)
+	}
 		if err != nil {
 			return fmt.Errorf("failed to initialize kubelet event client: %w", err)
 		}
@@ -721,7 +739,11 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 		}
 
 		heartbeatClientConfig.QPS = float32(-1)
+		 if httpClient != nil {
+			 kubeDeps.HeartbeatClient, err = clientset.NewForConfigAndClient(&heartbeatClientConfig, httpClient)
+		 } else {
 		kubeDeps.HeartbeatClient, err = clientset.NewForConfig(&heartbeatClientConfig)
+	}
 		if err != nil {
 			return fmt.Errorf("failed to initialize kubelet heartbeat client: %w", err)
 		}
