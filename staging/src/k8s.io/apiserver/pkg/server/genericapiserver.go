@@ -25,10 +25,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"net"
 
 	systemd "github.com/coreos/go-systemd/v22/daemon"
 	"github.com/quic-go/quic-go/http3"
-	
+	quic "github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 	apidiscoveryv2 "k8s.io/api/apidiscovery/v2"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -761,6 +762,7 @@ func (s preparedGenericAPIServer) NonBlockingRunWithContext(ctx context.Context,
 		//ADDED BY SADAF
 		// ─── HTTP/3 (QUIC) listener ───
 		{
+			if s.SecureServingInfo != nil && s.SecureServingInfo.Listener != nil {
 			stopCh := ctx.Done()
 			// Build the same TLS config HTTPS uses
 			tlsCfg, err := s.SecureServingInfo.tlsConfig(stopCh)
@@ -771,35 +773,51 @@ func (s preparedGenericAPIServer) NonBlockingRunWithContext(ctx context.Context,
 				tls3 := tlsCfg.Clone()
 				http3.ConfigureTLSConfig(tls3) // set ALPN h3, enforcing TLS 1.3
 				
-				addr := ":6443" // fallback
-				if l := s.SecureServingInfo.Listener; l != nil {
-					addr = l.Addr().String()
+				//To fix the double close panic, created one UDP socket to serve and stop by closing it
+				 addr := s.SecureServingInfo.Listener.Addr().String()
+				 host, port, err := net.SplitHostPort(addr)
+				 if err != nil {
+					 klog.ErrorS(err, "http3: SplitHostPort failed", "addr", addr)
+				 } else {
+					 udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
+				if err != nil {
+					klog.ErrorS(err, "http3: resolve UDP addr failed","host", host, "port", port)
 				}
-
+				pc, err := net.ListenUDP("udp", udpAddr)
+				if err != nil {
+					klog.ErrorS(err, "http3: listen UDP failed", "addr", udpAddr.String())
+				} else {
 				quicSrv := &http3.Server{
-					Addr:      addr,
+					Addr:      net.JoinHostPort(host, port),
 					Handler:   s.Handler.Director, // same handler as HTTPS
 					TLSConfig: tls3,
+					QUICConfig: &quic.Config{
+						KeepAlivePeriod:      10 * time.Second,
+						HandshakeIdleTimeout: 5 * time.Second,
+						MaxIdleTimeout:       30 * time.Second,
+					},
 				}
-				klog.InfoS("http3: enabling QUIC", "addr", addr)
+				klog.InfoS("http3: enabling QUIC", "addr", udpAddr.String())
 				// Close QUIC when apiserver context is cancelled
 				go func() {
 					<-stopCh
-					klog.InfoS("http3: shutting down QUIC")
-					_ = quicSrv.Close()
+					klog.InfoS("http3: shutting down QUIC(UDP socket)")
+					_ = pc.Close()
 				}()
 				// Run the QUIC server
 				go func() {
-					if err := quicSrv.ListenAndServe(); err != nil {
-						//log: ListenAndServe returns non-nil error on Close()
-						klog.ErrorS(err, "http3: QUIC listener finished")
+					if err := quicSrv.Serve(pc); err != nil && !errors.Is(err, net.ErrClosed) {
+						klog.ErrorS(err, "http3: Serve ended with error")
 					} else {
-						klog.InfoS("http3: QUIC listener exited successfully")
+						klog.InfoS("http3: Serve exited cleanly")
 					}
 				}()
 			}  
 		}
 	}
+}
+}
+}
 //
 
 	// Now that listener have bound successfully, it is the
