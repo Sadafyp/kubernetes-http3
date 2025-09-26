@@ -211,13 +211,24 @@ func (s *WatchServer) HandleHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}()
 
-	flusher, ok := w.(http.Flusher)
+	//ADDED BY SADAF
+	flusher, ok := GetFlusher(w) //with error log
 	if !ok {
-		err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
-		utilruntime.HandleError(err)
-		s.Scope.err(errors.NewInternalError(err), w, req)
-		return
+		   err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
+		   utilruntime.HandleError(err)
+		   s.Scope.err(errors.NewInternalError(err), w, req)
+		   return
 	}
+
+	//
+
+	//flusher, ok := w.(http.Flusher)
+	//if !ok {
+	//	err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
+	//	utilruntime.HandleError(err)
+	//	s.Scope.err(errors.NewInternalError(err), w, req)
+	//	return
+	//}
 
 	framer := s.Framer.NewFrameWriter(w)
 	if framer == nil {
@@ -234,7 +245,7 @@ func (s *WatchServer) HandleHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// begin the stream
 	w.Header().Set("Content-Type", s.MediaType)
-	w.Header().Set("Transfer-Encoding", "chunked")
+	//w.Header().Set("Transfer-Encoding", "chunked") //Commented out BY SADAF- not helpful for http2/3
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
@@ -271,10 +282,12 @@ func (s *WatchServer) HandleHTTP(w http.ResponseWriter, req *http.Request) {
 				// client disconnect.
 				return
 			}
-
-			if len(ch) == 0 {
-				flusher.Flush()
-			}
+			//ADDED BY SADAF
+			flusher.Flush() //Flush unconditionally
+			//if len(ch) == 0 {
+			//	flusher.Flush()
+			//}
+			//
 			if isWatchListLatencyRecordingRequired {
 				metrics.RecordWatchListLatency(req.Context(), s.Scope.Resource, s.metricsScope)
 			}
