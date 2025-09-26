@@ -211,24 +211,15 @@ func (s *WatchServer) HandleHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 	}()
 
-	//ADDED BY SADAF
-	flusher, ok := GetFlusher(w) //with error log
-	if !ok {
-		   err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
-		   utilruntime.HandleError(err)
-		   s.Scope.err(errors.NewInternalError(err), w, req)
-		   return
-	}
-
-	//
-
+	//CHANGED BY SADAF
+	flusher, ok := GetFlusher(w) 
 	//flusher, ok := w.(http.Flusher)
-	//if !ok {
-	//	err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
-	//	utilruntime.HandleError(err)
-	//	s.Scope.err(errors.NewInternalError(err), w, req)
-	//	return
-	//}
+	if !ok {
+		err := fmt.Errorf("unable to start watch - can't get http.Flusher: %#v", w)
+		utilruntime.HandleError(err)
+		s.Scope.err(errors.NewInternalError(err), w, req)
+		return
+	}
 
 	framer := s.Framer.NewFrameWriter(w)
 	if framer == nil {
