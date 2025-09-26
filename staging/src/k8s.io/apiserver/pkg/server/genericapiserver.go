@@ -17,6 +17,7 @@ limitations under the License.
 package server
 
 import (
+	"crypto/tls"
 	"context"
 	"errors"
 	"fmt"
@@ -68,7 +69,23 @@ import (
 	openapiutil "k8s.io/kube-openapi/pkg/util"
 	"k8s.io/kube-openapi/pkg/validation/spec"
 )
+//ADDED BY SADAF
+ func prependH3(protos []string) []string {
+	 out := []string{http3.NextProtoH3} // "h3"
+	 for _, p := range protos {
+		 if p == http3.NextProtoH3 {
+			 continue
+		 }
+		 if strings.HasPrefix(p, "h3-") { // drop draft tokens
+			 continue
+		 }
+		 out = append(out, p)
+	 }
+	 return out
+ }
 
+
+//
 // Info about an API group.
 type APIGroupInfo struct {
 	PrioritizedVersions []schema.GroupVersion
@@ -763,6 +780,7 @@ func (s preparedGenericAPIServer) NonBlockingRunWithContext(ctx context.Context,
 		// ─── HTTP/3 (QUIC) listener ───
 		{
 			if s.SecureServingInfo != nil && s.SecureServingInfo.Listener != nil {
+				klog.InfoS("HTTP3-MARKER", "build", "h3-001")
 			stopCh := ctx.Done()
 			// Build the same TLS config HTTPS uses
 			tlsCfg, err := s.SecureServingInfo.tlsConfig(stopCh)
@@ -772,53 +790,80 @@ func (s preparedGenericAPIServer) NonBlockingRunWithContext(ctx context.Context,
 				// Cloning
 				tls3 := tlsCfg.Clone()
 				http3.ConfigureTLSConfig(tls3) // set ALPN h3, enforcing TLS 1.3
+				tls3.NextProtos = prependH3(tls3.NextProtos)
+				  if tls3.GetConfigForClient != nil {
+					  klog.InfoS("http3: GetConfigForClient is set; wrapping to enforce h3 ALPN")
+					  klog.InfoS("HTTP3-MARKER", "nextProtos", tls3.NextProtos, "hasGetConfigForClient", tls3.GetConfigForClient != nil)
+					  orig := tls3.GetConfigForClient
+					  tls3.GetConfigForClient = func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+                                                cfg, err := orig(chi)
+                                                if err != nil || cfg == nil {
+                                                        return cfg, err
+                                                }
+						klog.InfoS("http3: GetConfigForClient returned config", "serverName", chi.ServerName, "alpnBefore", cfg.NextProtos)
+                                                c := cfg.Clone()
+						if c.MinVersion < tls.VersionTLS13 {
+							c.MinVersion = tls.VersionTLS13
+						}
+                                                http3.ConfigureTLSConfig(c) // forcing ALPN=h3 on the per-handshake config as well
+						 c.NextProtos = prependH3(c.NextProtos)
+						klog.InfoS("http3: enforced h3 ALPN in callback", "serverName", chi.ServerName, "alpnAfter", c.NextProtos)
+                                                return c, nil
+                                        }
+                                }
+
+				// Serve(pc net.PacketConn):  owning pc; closing pc stops the server, server does not close pc for 
+				// ServeListener(l quic.EarlyListener): server owns the listener, calling srv.Close() stops it and closes the listener 
 				
-				//To fix the double close panic, created one UDP socket to serve and stop by closing it
-				 addr := s.SecureServingInfo.Listener.Addr().String()
-				 host, port, err := net.SplitHostPort(addr)
-				 if err != nil {
-					 klog.ErrorS(err, "http3: SplitHostPort failed", "addr", addr)
-				 } else {
-					 udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
+				// UDP on the same port as HTTPS
+				_, port, _ := net.SplitHostPort(s.SecureServingInfo.Listener.Addr().String())
+				addr := ":" + port
+				klog.InfoS("http3: enabling QUIC", "addr", addr, "baseNextProtos", tls3.NextProtos, "hasGetConfigForClient", tls3.GetConfigForClient != nil)
+
+				pc, err := net.ListenPacket("udp", addr)
 				if err != nil {
-					klog.ErrorS(err, "http3: resolve UDP addr failed","host", host, "port", port)
-				}
-				pc, err := net.ListenUDP("udp", udpAddr)
-				if err != nil {
-					klog.ErrorS(err, "http3: listen UDP failed", "addr", udpAddr.String())
+					klog.ErrorS(err, "http3: listen UDP failed")
 				} else {
-				quicSrv := &http3.Server{
-					Addr:      net.JoinHostPort(host, port),
-					Handler:   s.Handler.Director, // same handler as HTTPS
-					TLSConfig: tls3,
-					QUICConfig: &quic.Config{
+					// Create QUIC EarlyListener from PacketConn
+					ql, err := quic.ListenEarly(pc, tls3, &quic.Config{
 						KeepAlivePeriod:      10 * time.Second,
 						HandshakeIdleTimeout: 5 * time.Second,
 						MaxIdleTimeout:       30 * time.Second,
-					},
-				}
-				klog.InfoS("http3: enabling QUIC", "addr", udpAddr.String())
-				// Close QUIC when apiserver context is cancelled
-				go func() {
-					<-stopCh
-					klog.InfoS("http3: shutting down QUIC(UDP socket)")
-					_ = pc.Close()
-				}()
-				// Run the QUIC server
-				go func() {
-					if err := quicSrv.Serve(pc); err != nil && !errors.Is(err, net.ErrClosed) {
-						klog.ErrorS(err, "http3: Serve ended with error")
+					})
+					if err != nil {
+						klog.ErrorS(err, "http3: quic.ListenEarly failed")
+						_ = pc.Close()
 					} else {
-						klog.InfoS("http3: Serve exited cleanly")
+						srv := &http3.Server{
+							Handler:   s.Handler,
+							TLSConfig: tls3,
+						}
+						var stopOnce sync.Once
+						 // Stop http3 when apiserver stops
+						 go func() {
+							 <-ctx.Done()
+							 stopOnce.Do(func() {
+								 klog.InfoS("http3: shutting down")
+								 _ = srv.Close() // closes ql; which closes pc
+							})
+						}()
+						// Serve HTTP/3
+						go func() {
+							if err := srv.ServeListener(ql); err != nil && !errors.Is(err, net.ErrClosed) {
+								klog.ErrorS(err, "http3: ServeListener ended with error")
+							} else {
+								klog.InfoS("http3: ServeListener exited cleanly")
+							}
+						}()
 					}
-				}()
-			}  
+				}
+			}
 		}
 	}
 }
-}
-}
-//
+
+
+			//
 
 	// Now that listener have bound successfully, it is the
 	// responsibility of the caller to close the provided channel to

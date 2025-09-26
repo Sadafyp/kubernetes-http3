@@ -15,9 +15,12 @@ import (
 
 // newHTTP3Client builds a *http.Client that talks HTTP/3 (QUIC) using the
 // same TLS as a normal client-go *rest.Config
-func newHTTP3Client(cfg *rest.Config) (*http.Client, error) {
+func newHTTP3Client(
+	cfg *rest.Config,
+	getClientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error),
+) (*http.Client, func(), error){
 	if cfg == nil {
-		return nil, fmt.Errorf("http3: nil rest.Config")
+		return nil, nil, fmt.Errorf("http3: nil rest.Config")
 	}
 
 	// Convert kube rest.Config.TLSClientConfig to *tls.Config via client-go helpers.
@@ -36,7 +39,7 @@ func newHTTP3Client(cfg *rest.Config) (*http.Client, error) {
 
 	tlsCfg, err := transport.TLSConfigFor(tcfg)
 	if err != nil {
-		return nil, fmt.Errorf("http3: TLSConfigFor: %w", err)
+		return nil, nil, fmt.Errorf("http3: TLSConfigFor: %w", err)
 	}
 	// works if TLSConfigFor returns nil (in case no TLS input is set)
 	if tlsCfg == nil {
@@ -46,6 +49,11 @@ func newHTTP3Client(cfg *rest.Config) (*http.Client, error) {
 	// HTTP/3 requires TLS 1.3 and ALPN "h3"
 	if tlsCfg.MinVersion < tls.VersionTLS13 {
 		tlsCfg.MinVersion = tls.VersionTLS13
+	}
+	
+	//When rotation is enabled, fetches the current cert from the kubelet’s certificate manager
+	if getClientCert != nil {
+		tlsCfg.GetClientCertificate = getClientCert
 	}
 	http3.ConfigureTLSConfig(tlsCfg)
 
@@ -62,6 +70,7 @@ func newHTTP3Client(cfg *rest.Config) (*http.Client, error) {
 	}
 
 	klog.InfoS("http3: kubelet HTTP/3 transport initialized")
-	return &http.Client{Transport: rt}, nil
+	closeFn := func() { _ = rt.Close() }
+	return &http.Client{Transport: rt}, closeFn, nil
 }
 

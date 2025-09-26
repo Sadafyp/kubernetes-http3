@@ -126,6 +126,11 @@ import (
 	"k8s.io/utils/exec"
 	netutils "k8s.io/utils/net"
 )
+var (
+    h3Client *http.Client
+    closeH3  func()
+    h3Err    error
+)
 
 func init() {
 	utilruntime.Must(logsapi.AddFeatureGates(utilfeature.DefaultMutableFeatureGate))
@@ -699,15 +704,15 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 		//ADDED BY SADAF
 		// Build an HTTP/3 client for the same TLS
 		// If anything fails, fall back
-		var httpClient *http.Client
-		if h3c, h3err := newHTTP3Client(clientConfig); h3err != nil {
-			klog.ErrorS(h3err, "http3: building HTTP/3 client failed, falling back to default HTTP transport")
-		} else {
-			httpClient = h3c
-		}
+		//var httpClient *http.Client
+		//if h3c, h3err := newHTTP3Client(clientConfig); h3err != nil {
+		//	klog.ErrorS(h3err, "http3: building HTTP/3 client failed, falling back to default HTTP transport")
+		//} else {
+		//	httpClient = h3c}
+
 		// ----- main kube client -----
-		if httpClient != nil {
-			kubeDeps.KubeClient, err = clientset.NewForConfigAndClient(clientConfig, httpClient)
+		if h3Client != nil {
+			 kubeDeps.KubeClient, err = clientset.NewForConfigAndClient(clientConfig, h3Client)
 		} else {
 		//
 		kubeDeps.KubeClient, err = clientset.NewForConfig(clientConfig)
@@ -720,11 +725,11 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 		eventClientConfig := *clientConfig
 		eventClientConfig.QPS = float32(s.EventRecordQPS)
 		eventClientConfig.Burst = int(s.EventBurst)
-		if httpClient != nil {
-			kubeDeps.EventClient, err = v1core.NewForConfigAndClient(&eventClientConfig, httpClient)
+		if h3Client != nil {
+			 kubeDeps.EventClient, err = v1core.NewForConfigAndClient(&eventClientConfig, h3Client)
 		} else {
-		kubeDeps.EventClient, err = v1core.NewForConfig(&eventClientConfig)
-	}
+			kubeDeps.EventClient, err = v1core.NewForConfig(&eventClientConfig)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to initialize kubelet event client: %w", err)
 		}
@@ -739,11 +744,11 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 		}
 
 		heartbeatClientConfig.QPS = float32(-1)
-		 if httpClient != nil {
-			 kubeDeps.HeartbeatClient, err = clientset.NewForConfigAndClient(&heartbeatClientConfig, httpClient)
+		 if h3Client != nil {
+			 kubeDeps.HeartbeatClient, err = clientset.NewForConfigAndClient(&heartbeatClientConfig, h3Client)
 		 } else {
-		kubeDeps.HeartbeatClient, err = clientset.NewForConfig(&heartbeatClientConfig)
-	}
+			 kubeDeps.HeartbeatClient, err = clientset.NewForConfig(&heartbeatClientConfig)
+		 }
 		if err != nil {
 			return fmt.Errorf("failed to initialize kubelet heartbeat client: %w", err)
 		}
@@ -988,7 +993,7 @@ func buildKubeletClientConfig(ctx context.Context, s *options.KubeletServer, tp 
 
 		clientCertificateManager, err := buildClientCertificateManager(certConfig, clientConfig, s.CertDirectory, nodeName)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, err 
 		}
 
 		legacyregistry.RawMustRegister(metrics.NewGaugeFunc(
@@ -1016,7 +1021,7 @@ func buildKubeletClientConfig(ctx context.Context, s *options.KubeletServer, tp 
 		// or the bootstrapping credentials to potentially lay down new initial config.
 		closeAllConns, err := kubeletcertificate.UpdateTransport(logger, wait.NeverStop, transportConfig, clientCertificateManager, 5*time.Minute)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, err 
 		}
 		var onHeartbeatFailure func()
 		// Kubelet needs to be able to recover from stale http connections.
@@ -1034,7 +1039,31 @@ func buildKubeletClientConfig(ctx context.Context, s *options.KubeletServer, tp 
 
 		logger.V(2).Info("Starting client certificate rotation")
 		clientCertificateManager.Start()
+		//ADDED BY SADAF
 
+		h3Client, closeH3, h3Err = newHTTP3Client(clientConfig, func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			if c := clientCertificateManager.Current(); c != nil {
+				return c, nil
+			}
+			return &tls.Certificate{}, nil // or return an error to force retry
+		})
+		if h3Err != nil {
+			klog.ErrorS(h3Err, "http3: building HTTP/3 client failed; kubelet will use standard HTTP transport")
+			h3Client = nil
+		} else {
+			klog.InfoS("http3: kubelet clients will use HTTP/3 transport")
+		}
+		// heartbeat recovery also drops QUIC connections if present
+		if closeH3 != nil {
+			prev := onHeartbeatFailure
+			onHeartbeatFailure = func() {
+				if prev != nil {
+					prev()
+				}
+				closeH3()  // reset QUIC to re-dial cleanly after failures
+			}
+		}
+		//
 		return transportConfig, onHeartbeatFailure, nil
 	}
 
