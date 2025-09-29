@@ -82,6 +82,11 @@ type Options struct {
 
 	// Flags hold the parsed CLI flags.
 	Flags *cliflag.NamedFlagSets
+
+	//ADDED BY SADAF
+	UseHTTP3 bool
+	HTTP3Strict bool
+
 }
 
 // NewOptions returns default scheduler app options.
@@ -204,6 +209,13 @@ func (o *Options) initFlags() {
 	fs.StringVar(&o.WriteConfigTo, "write-config-to", o.WriteConfigTo, "If set, write the configuration values to this file and exit.")
 	fs.StringVar(&o.Master, "master", o.Master, "The address of the Kubernetes API server (overrides any value in kubeconfig)")
 
+	//ADDED BY SADAF
+	fs.BoolVar(&o.UseHTTP3, "use-http3", false,"Prefer HTTP/3 (QUIC) to talk to the API server, falling back to HTTP/2 on failure.")
+	fs.BoolVar(&o.HTTP3Strict, "http3-strict", false,"Use only HTTP/3 (QUIC) to talk to the API server. Fail instead of falling back")
+	
+	//	
+
+
 	o.SecureServing.AddFlags(nfs.FlagSet("secure serving"))
 	o.Authentication.AddFlags(nfs.FlagSet("authentication"))
 	o.Authorization.AddFlags(nfs.FlagSet("authorization"))
@@ -304,10 +316,23 @@ func (o *Options) Config(ctx context.Context) (*schedulerappconfig.Config, error
 		}
 	}
 
+	//ADDED BY SADAF
+	// Strict implies use-http3 
+	if o.HTTP3Strict { 
+		o.UseHTTP3 = true
+	}
+
 	c := &schedulerappconfig.Config{}
 	if err := o.ApplyTo(logger, c); err != nil {
 		return nil, err
 	}
+
+	//ADDED BY SADAF
+        if (o.UseHTTP3 || o.HTTP3Strict) && c.KubeConfig != nil { 
+		ApplyHTTP3ToRestConfig(c.KubeConfig, o.HTTP3Strict)
+	} 
+
+	//
 
 	// Prepare kube clients.
 	client, eventClient, err := createClients(c.KubeConfig)
