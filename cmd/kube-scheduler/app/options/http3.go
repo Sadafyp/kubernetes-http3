@@ -16,7 +16,7 @@ import (
 // force=true  => H3 only (no fallback)
 func ApplyHTTP3ToRestConfig(cfg *rest.Config, force bool) {
 	cfg.WrapTransport = func(base http.RoundTripper) http.RoundTripper {
-		// Build tls.Config from the same rest.Config TLS (exactly like your working version)
+		// Building tls . Config from the same rest . Config TLS stack
 		tlsCfg, err := clienttransport.TLSConfigFor(&clienttransport.Config{
 			TLS: clienttransport.TLSConfig{
 				Insecure:   cfg.TLSClientConfig.Insecure,
@@ -27,12 +27,12 @@ func ApplyHTTP3ToRestConfig(cfg *rest.Config, force bool) {
 				KeyFile:    cfg.TLSClientConfig.KeyFile,
 				KeyData:    cfg.TLSClientConfig.KeyData,
 				ServerName: cfg.TLSClientConfig.ServerName,
-				// ALPN offers h3
+				// setting ALPN h3
 				NextProtos: []string{"h3"},
 			},
 		})
 		if err != nil {
-			// TLS for H3 doesn't work, keep the original transport (HTTP/2)
+			// TLS for H3 doesn't work, keep the original (HTTP/2)
 			klog.ErrorS(err, "Failed to build TLS config for HTTP/3; falling back to base transport (HTTP/2)")
 			return base
 		}

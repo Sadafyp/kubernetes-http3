@@ -83,9 +83,11 @@ import (
 	 }
 	 return out
  }
-
+//TEST qlog
 
 //
+
+
 // Info about an API group.
 type APIGroupInfo struct {
 	PrioritizedVersions []schema.GroupVersion
@@ -825,11 +827,15 @@ func (s preparedGenericAPIServer) NonBlockingRunWithContext(ctx context.Context,
 					klog.ErrorS(err, "http3: listen UDP failed")
 				} else {
 					// Create QUIC EarlyListener from PacketConn
-					ql, err := quic.ListenEarly(pc, tls3, &quic.Config{
-						KeepAlivePeriod:      10 * time.Second,
-						HandshakeIdleTimeout: 5 * time.Second,
-						MaxIdleTimeout:       30 * time.Second,
-					})
+					klog.InfoS("http3: QUIC cfg", "handshake", (10*time.Second).String(), "idle", (5*time.Minute).String(), "keepAlive", (10*time.Second).String())
+					qconf :=&quic.Config{
+                                                KeepAlivePeriod:      10 * time.Second,
+                                                HandshakeIdleTimeout: 10 * time.Second ,
+                                                MaxIdleTimeout:       5 * time.Minute,
+						Tracer:		      http3QLOGTracerFromEnv(),
+                                        
+					}
+					ql, err := quic.ListenEarly(pc, tls3, qconf)
 					if err != nil {
 						klog.ErrorS(err, "http3: quic.ListenEarly failed")
 						_ = pc.Close()

@@ -129,6 +129,9 @@ type KubeletFlags struct {
 	MaxContainerCount int32
 	// SeccompDefault enables the use of `RuntimeDefault` as the default seccomp profile for all workloads on the node.
 	SeccompDefault bool
+	
+	//ADDED BY SADAF
+	UseHTTP3 bool
 }
 
 // NewKubeletFlags will create a new KubeletFlags with default values
@@ -315,6 +318,11 @@ func (f *KubeletFlags) AddFlags(mainfs *pflag.FlagSet) {
 	fs.MarkDeprecated("experimental-mounter-path", "will be removed in 1.25 or later. in favor of using CSI.")
 	fs.BoolVar(&f.ExperimentalNodeAllocatableIgnoreEvictionThreshold, "experimental-allocatable-ignore-eviction", f.ExperimentalNodeAllocatableIgnoreEvictionThreshold, "When set to 'true', Hard Eviction Thresholds will be ignored while calculating Node Allocatable. See https://kubernetes.io/docs/tasks/administer-cluster/reserve-compute-resources/ for more details. [default=false]")
 	fs.MarkDeprecated("experimental-allocatable-ignore-eviction", "will be removed in 1.25 or later.")
+
+	//ADDED BY SADAF
+	 fs.BoolVar(&f.UseHTTP3, "use-http3", false,
+        "Use HTTP/3 (QUIC) for kubelet ↔ apiserver traffic. false by default")
+    // fs.BoolVar(&f.HTTP3Strict, "http3-strict", false, "Fail if HTTP/3 is not negotiated")
 }
 
 // addContainerRuntimeFlags adds flags to the container runtime, according to ContainerRuntimeOptions.

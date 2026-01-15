@@ -317,7 +317,7 @@ func (o *Options) Config(ctx context.Context) (*schedulerappconfig.Config, error
 	}
 
 	//ADDED BY SADAF
-	// Strict implies use-http3 
+	// Strict -> use-http3 
 	if o.HTTP3Strict { 
 		o.UseHTTP3 = true
 	}

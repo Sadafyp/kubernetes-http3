@@ -2,6 +2,9 @@ package app
 
 import (
 	"crypto/tls"
+	//"crypto/x509"
+	"net"
+	"net/url"
 	"fmt"
 	"net/http"
 	"time"
@@ -50,17 +53,45 @@ func newHTTP3Client(
 	if tlsCfg.MinVersion < tls.VersionTLS13 {
 		tlsCfg.MinVersion = tls.VersionTLS13
 	}
-	
+
+	// SNI (ServerName) is set if not provided by kubeconfig
+	if tlsCfg.ServerName == "" && cfg.Host != "" {
+		if u, err := url.Parse(cfg.Host); err == nil {
+			host := u.Hostname()
+			// Only set for hostnames
+			if net.ParseIP(host) == nil {
+				tlsCfg.ServerName = host
+			}
+		}
+	}
+
 	//When rotation is enabled, fetches the current cert from the kubelet’s certificate manager
 	if getClientCert != nil {
 		tlsCfg.GetClientCertificate = getClientCert
 	}
 	http3.ConfigureTLSConfig(tlsCfg)
 
+
+	//If no RootCAs, not Insecure, fall back to system roots(Shouldn't be needed)
+	//if !tcfg.TLS.Insecure && tlsCfg.RootCAs == nil {
+	//	if pool, _ := x509.SystemCertPool(); pool != nil {
+	//		tlsCfg.RootCAs = pool
+	//	}
+	//}
+
+
+	//if tlsCfg.RootCAs == nil && !tcfg.TLS.Insecure {
+	//	klog.ErrorS(nil, "http3: RootCAs are nil; TLS verify could fail unless server is publicly trusted")
+	//}
+	//klog.InfoS("http3: kubelet HTTP/3 transport initialized",
+	//	"serverName", tlsCfg.ServerName,
+		//"insecureSkipVerify", tlsCfg.InsecureSkipVerify,
+	//)
+
 	// QUIC tuning (safe defaults)
 	quicCfg := &quic.Config{
-		HandshakeIdleTimeout: 5 * time.Second,
-		MaxIdleTimeout:       30 * time.Second,
+		HandshakeIdleTimeout: 10 * time.Second,
+		MaxIdleTimeout:       5 * time.Minute,
 		KeepAlivePeriod:      10 * time.Second,
 	}
 
@@ -69,7 +100,14 @@ func newHTTP3Client(
 		QUICConfig:      quicCfg,
 	}
 
-	klog.InfoS("http3: kubelet HTTP/3 transport initialized")
+	klog.InfoS("http3: kubelet QUIC config",
+	"MaxIdleTimeout", rt.QUICConfig.MaxIdleTimeout,
+	"HandshakeIdleTimeout", rt.QUICConfig.HandshakeIdleTimeout,
+	"KeepAlivePeriod", rt.QUICConfig.KeepAlivePeriod,
+)
+
+
+	klog.InfoS("http3: kubelet HTTP/3 transport initialized","serverName", tlsCfg.ServerName,)
 	closeFn := func() { _ = rt.Close() }
 	return &http.Client{Transport: rt}, closeFn, nil
 }
